@@ -2,142 +2,226 @@ import 'dart:io';
 import 'dart:math';
 
 void main() {
-  while (true) {
-    print('Выберите режим игры:');
-    print('1. Играть с кентом');
-    print('2. Играть против бездушной машины');
-    String? mode = stdin.readLineSync();
-
-    print('Введите размер для поля битвы (например, 3 для 3x3):');
-    int size = int.parse(stdin.readLineSync()!);
-    
-    play(size, mode == '2');
-    
-    print('Хотите повеселиться еще раз? (y/n)');
-    String? playAgain = stdin.readLineSync();
-    if (playAgain?.toLowerCase() != 'y') {
-      break;
-    }
-  }
+  SeaBattleGame game = SeaBattleGame();
+  game.start();
 }
 
-void play(int size, bool withAi) {
-  List<List<String>> field = List.generate(size, (_) => List.filled(size, ' '));
-  String currentPlayer = Random().nextBool() ? 'X' : 'O';
-  bool endGame = false;
+class SeaBattleGame {
+  late Player player1;
+  late Player bot;
+  late int gridSize;
+  final List<int> allowedGridSizes = [10, 14, 20];
 
-  while (!endGame && !isFielddFull(field)) {
-    printField(field);
-    if (currentPlayer == 'X' || !withAi) {
-      print('Игрок $currentPlayer, введите ваши координаты (строка и столбец):');
-      String? input = stdin.readLineSync();
-      List<int> move = input!.split(' ').map(int.parse).toList();
-      if (isValidMove(field, move[0], move[1])) {
-        field[move[0]][move[1]] = currentPlayer;
+  void start() {
+    print("Добро пожаловать в игру 'Морской бой'!");
+
+    _setupGame();
+    print("Начинаем игру!");
+
+    bool isPlayerTurn = true;
+    while (true) {
+      if (isPlayerTurn) {
+        print("${player1.name}, ваш ход.");
+        player1.displayGrids();
+        player1.makeMove(bot);
+        if (bot.isDefeated()) {
+          print("Поздравляем, ${player1.name}! Вы победили!");
+          break;
+        }
       } else {
-        print('цифры правильно вводи через пробела да.');
-        continue;
+        print("Ходит бот...");
+        bot.makeMove(player1);
+        if (player1.isDefeated()) {
+          print("Бот победил. Попробуйте снова!");
+          break;
+        }
       }
-    } else {
-      // Ход робота
-      print('Ход бездушной машины...');
-      makeRobotMove(field, currentPlayer);
-    }
-
-    endGame = winCheck(field, currentPlayer);
-    if (!endGame) {
-      currentPlayer = currentPlayer == 'X' ? 'O' : 'X';
+      isPlayerTurn = !isPlayerTurn;
+      _pauseAndClear();
     }
   }
 
-  printField(field);
-  if (endGame) {
-    print('Игрок $currentPlayer размотал котенка!');
-  } else {
-    print('Игра закончилась взаимным уважением!');
+  void _setupGame() {
+    print("Введите ваше имя:");
+    String name = stdin.readLineSync()!;
+    gridSize = _chooseGridSize();
+    player1 = Player(name, gridSize);
+    bot = Bot(gridSize);
+
+    print("Разместите свои корабли на поле!");
+    player1.placeShips();
+    print("Бот размещает свои корабли...");
+    bot.placeShips();
+    _pauseAndClear();
   }
-}
 
-void printField(List<List<String>> field) {
-  for (var row in field) {
-    print(row.join('|'));
-    print('-' * (row.length * 2 - 1));
-  }
-}
-
-bool isValidMove(List<List<String>> field, int row, int col) {
-  return row >= 0 && row < field.length && col >= 0 && col < field.length && field[row][col] == ' ';
-}
-
-bool isFielddFull(List<List<String>> field) {
-  for (var row in field) {
-    if (row.contains(' ')) {
-      return false;
-    }
-  }
-  return true;
-}
-
-bool winCheck(List<List<String>> field, String player) {
-  // Проверка строк и столбцов
-  for (int i = 0; i < field.length; i++) {
-    if (field[i].every((yacheyka) => yacheyka == player) || 
-        field.map((row) => row[i]).every((yacheyka) => yacheyka == player)) {
-      return true;
+  int _chooseGridSize() {
+    print("Выберите размер поля: ${allowedGridSizes.join(", ")}");
+    while (true) {
+      String? input = stdin.readLineSync();
+      int? size = int.tryParse(input ?? '');
+      if (size != null && allowedGridSizes.contains(size)) {
+        return size;
+      }
+      print("Неверный ввод. Попробуйте снова.");
     }
   }
 
-  // Проверка диагоналей
-  if (List.generate(field.length, (i) => field[i][i]).every((yacheyka) => yacheyka == player) ||
-      List.generate(field.length, (i) => field[i][field.length - 1 - i]).every((yacheyka) => yacheyka == player)) {
+  void _pauseAndClear() {
+    print("Нажмите Enter для продолжения...");
+    stdin.readLineSync();
+    print("\x1B[2J\x1B[0;0H"); // Очищает консоль
+  }
+}
+
+class Player {
+  final String name;
+  final int gridSize;
+  late List<List<String>> grid;
+  late List<List<String>> enemyGrid;
+  late List<Ship> ships;
+
+  Player(this.name, this.gridSize) {
+    grid = List.generate(gridSize, (_) => List.filled(gridSize, ' '));
+    enemyGrid = List.generate(gridSize, (_) => List.filled(gridSize, ' '));
+    ships = [];
+  }
+
+  void placeShips() {
+    _autoPlaceShips();
+  }
+
+  void _autoPlaceShips() {
+    Random random = Random();
+    List<int> shipSizes = [5, 4, 3, 3, 2];
+    for (int size in shipSizes) {
+      while (true) {
+        int x = random.nextInt(gridSize);
+        int y = random.nextInt(gridSize);
+        bool horizontal = random.nextBool();
+        if (_canPlaceShip(x, y, size, horizontal)) {
+          _placeShip(x, y, size, horizontal);
+          break;
+        }
+      }
+    }
+  }
+
+  bool _canPlaceShip(int x, int y, int size, bool horizontal) {
+    for (int i = 0; i < size; i++) {
+      int nx = x + (horizontal ? i : 0);
+      int ny = y + (horizontal ? 0 : i);
+      if (nx >= gridSize || ny >= gridSize || grid[ny][nx] != ' ') return false;
+    }
     return true;
   }
 
-  return false;
-}
+  void _placeShip(int x, int y, int size, bool horizontal) {
+    Ship ship = Ship(size);
+    for (int i = 0; i < size; i++) {
+      int nx = x + (horizontal ? i : 0);
+      int ny = y + (horizontal ? 0 : i);
+      grid[ny][nx] = 'S';
+      ship.positions.add(Point(nx, ny));
+    }
+    ships.add(ship);
+  }
 
-void makeRobotMove(List<List<String>> field, String player) {
-  String visavi = player == 'X' ? 'O' : 'X';
+  void displayGrids() {
+    print("Ваше поле:");
+    _printGrid(grid);
+    print("\nПоле противника:");
+    _printGrid(enemyGrid);
+  }
 
-  // Сначала проверяем, может ли робот выиграть в следующем ходе
-  for (int i = 0; i < field.length; i++) {
-    for (int j = 0; j < field.length; j++) {
-      if (field[i][j] == ' ') {
-        field[i][j] = player;
-        if (winCheck(field, player)) {
-          return; // Если выиграл, делаем ход
-        }
-        field[i][j] = ' '; // Возвращаем обратно
-      }
+  void _printGrid(List<List<String>> grid) {
+    print("  ${List.generate(gridSize, (i) => i).join(' ')}");
+    for (int y = 0; y < gridSize; y++) {
+      String row = grid[y].join(' ');
+      print("$y $row");
     }
   }
 
-  // Затем проверяем, может ли игрок выиграть в следующем ходе, и блокируем его
-  for (int i = 0; i < field.length; i++) {
-    for (int j = 0; j < field.length; j++) {
-      if (field[i][j] == ' ') {
-        field[i][j] = visavi;
-        if (winCheck(field, visavi)) {
-          field[i][j] = player; // Блокируем ход игрока
+  void makeMove(Player opponent) {
+    while (true) {
+      print("Введите координаты атаки (например, 3 5):");
+      String? input = stdin.readLineSync();
+      List<String> parts = input?.split(' ') ?? [];
+      if (parts.length == 2) {
+        int? x = int.tryParse(parts[0]);
+        int? y = int.tryParse(parts[1]);
+        if (x != null && y != null && _isValidMove(x, y, opponent.grid)) {
+          _processMove(x, y, opponent);
           return;
         }
-        field[i][j] = ' '; // Возвращаем обратно
+      }
+      print("Неверный ход. Попробуйте снова.");
+    }
+  }
+
+  bool _isValidMove(int x, int y, List<List<String>> grid) {
+    // Проверяем границы поля
+    if (x < 0 || y < 0 || x >= gridSize || y >= gridSize) {
+      print("Координаты вне допустимого диапазона. Попробуйте снова.");
+      return false;
+    }
+    // Проверяем, что клетка ещё не атакована
+    if (grid[y][x] == '.' || grid[y][x] == 'X') {
+      print("Вы уже атаковали эту клетку. Попробуйте другую.");
+      return false;
+    }
+    return true;
+  }
+
+
+  void _processMove(int x, int y, Player opponent) {
+    if (opponent.grid[y][x] == 'S') {
+      print("Попадание!");
+      opponent.grid[y][x] = 'X';
+      enemyGrid[y][x] = 'X';
+    } else {
+      print("Мимо.");
+      opponent.grid[y][x] = '.';
+      enemyGrid[y][x] = '.';
+    }
+  }
+
+  bool isDefeated() {
+    return ships.every((ship) => ship.isSunk(grid));
+  }
+}
+
+class Bot extends Player {
+  Random random = Random();
+
+  Bot(int gridSize) : super("Бот", gridSize);
+
+  @override
+  void makeMove(Player opponent) {
+    while (true) {
+      int x = random.nextInt(gridSize);
+      int y = random.nextInt(gridSize);
+      if (_isValidMove(x, y, opponent.grid)) {
+        print("Бот атакует: $x $y");
+        _processMove(x, y, opponent);
+        return;
       }
     }
   }
 
-  // Если нет угрозы, делаем случайный ход
-  List<List<int>> emptyFields = [];
-  for (int i = 0; i < field.length; i++) {
-    for (int j = 0; j < field.length; j++) {
-      if (field[i][j] == ' ') {
-        emptyFields.add([i, j]);
-      }
-    }
+  @override
+  void displayGrids() {
+    // Бот не показывает своё поле
   }
+}
 
-  if (emptyFields.isNotEmpty) {
-    var randomMove = emptyFields[Random().nextInt(emptyFields.length)];
-    field[randomMove[0]][randomMove[1]] = player;
+class Ship {
+  final int size;
+  List<Point> positions = [];
+
+  Ship(this.size);
+
+  bool isSunk(List<List<String>> grid) {
+    return positions.every((point) => grid[point.y.toInt()][point.x.toInt()] == 'X');
   }
 }
