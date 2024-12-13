@@ -1,9 +1,94 @@
+import 'dart:async';
 import 'dart:io';
+import 'dart:isolate';
 import 'dart:math';
 
 void main() {
   SeaBattleGame game = SeaBattleGame();
   game.start();
+}
+
+class FileManager {
+  final String playerDataDir = 'C:/flutter_projects/crosses/crosseadnzeroes/player_data';
+  final String gameDataFile = 'current_game.txt';
+  final String logFile = 'game_log.txt';
+
+  FileManager() {
+    Directory(playerDataDir).createSync(recursive: true);
+  }
+
+  Future<void> initializePlayerFile(String playerName) async {
+    final file = File("./${playerName}.txt");
+    if (!(await file.exists())) {
+      await file.writeAsString('Игрок: $playerName\nИгр сыграно: 0\nПобед: 0\nПоражений: 0\n');
+    }
+  }
+
+  Future<void> updateStats(String playerName, {required bool isWinner}) async {
+    final file = File('.T/$playerName.txt');
+    if (!(await file.exists())) return;
+
+    final lines = await file.readAsLines();
+    int gamesPlayed = int.parse(lines[1].split(': ')[1]);
+    int wins = int.parse(lines[2].split(': ')[1]);
+    int losses = int.parse(lines[3].split(': ')[1]);
+
+    gamesPlayed++;
+    if (isWinner) {
+      wins++;
+    } else {
+      losses++;
+    }
+
+    await file.writeAsString('''Игрок: $playerName Игр сыграно: $gamesPlayed Побед: $wins Поражений: $losses''');
+  }
+
+  Future<void> logMove(String attacker, String defender, Point move, String result) async {
+    final logEntry = '$attacker атаковал ($move): $result\n';
+    await _writeToFile(logFile, logEntry);
+  }
+
+  Future<void> clearGameFile() async {
+    final file = File(gameDataFile);
+    if (await file.exists()) {
+      await file.writeAsString('');
+    }
+  }
+
+  Future<void> _writeToFile(String filePath, String content) async {
+    final file = File(filePath);
+    await file.writeAsString(content, mode: FileMode.append, flush: true);
+  }
+}
+
+class LogIsolate {
+  late Isolate _isolate;
+  late SendPort _sendPort;
+  final ReceivePort _receivePort = ReceivePort();
+
+  Future<void> initialize() async {
+    _isolate = await Isolate.spawn(_logIsolate, _receivePort.sendPort);
+    _sendPort = await _receivePort.first as SendPort;
+  }
+
+  void log(String message) {
+    _sendPort.send(message);
+  }
+
+  void dispose() {
+    _isolate.kill(priority: Isolate.immediate);
+    _receivePort.close();
+  }
+
+  static void _logIsolate(SendPort sendPort) {
+    final receivePort = ReceivePort();
+    sendPort.send(receivePort.sendPort);
+
+    final logFile = File('async_log.txt');
+    receivePort.listen((message) async {
+      await logFile.writeAsString('$message\n', mode: FileMode.append, flush: true);
+    });
+  }
 }
 
 class SeaBattleGame {
@@ -12,10 +97,12 @@ class SeaBattleGame {
   late int gridSize;
   final List<int> allowedGridSizes = [10, 14, 20];
 
-  void start() {
+  final FileManager fileManager = FileManager();
+
+  Future<void> start() async {
     print("Добро пожаловать в игру 'Морской бой'!");
 
-    _setupGame();
+    await _setupGame();
     print("Начинаем игру!");
 
     bool isPlayerTurn = true;
@@ -24,29 +111,43 @@ class SeaBattleGame {
         print("${player1.name}, ваш ход.");
         player1.displayGrids();
         player1.makeMove(bot);
+        await fileManager.logMove(player1.name, bot.name, player1.lastMove, bot.grid[player1.lastMove.y.toInt()][player1.lastMove.x.toInt()]);
+
         if (bot.isDefeated()) {
           print("Поздравляем, ${player1.name}! Вы победили!");
+          await fileManager.updateStats(player1.name, isWinner: true);
+          await fileManager.updateStats(bot.name, isWinner: false);
           break;
         }
       } else {
         print("Ходит бот...");
         bot.makeMove(player1);
+        await fileManager.logMove(bot.name, player1.name, bot.lastMove, player1.grid[bot.lastMove.y.toInt()][bot.lastMove.x.toInt()]);
+
         if (player1.isDefeated()) {
           print("Бот победил. Попробуйте снова!");
+          await fileManager.updateStats(player1.name, isWinner: false);
+          await fileManager.updateStats(bot.name, isWinner: true);
           break;
         }
       }
       isPlayerTurn = !isPlayerTurn;
       _pauseAndClear();
     }
+
+    await fileManager.clearGameFile();
+    print("Игра завершена!");
   }
 
-  void _setupGame() {
+  Future<void> _setupGame() async {
     print("Введите ваше имя:");
-    String name = stdin.readLineSync()!;
+    String name = stdin.readLineSync() ?? 'Игрок';
     gridSize = _chooseGridSize();
     player1 = Player(name, gridSize);
     bot = Bot(gridSize);
+
+    await fileManager.initializePlayerFile(player1.name);
+    await fileManager.initializePlayerFile(bot.name);
 
     print("Разместите свои корабли на поле!");
     player1.placeShips();
@@ -80,6 +181,7 @@ class Player {
   late List<List<String>> grid;
   late List<List<String>> enemyGrid;
   late List<Ship> ships;
+  late Point lastMove;
 
   Player(this.name, this.gridSize) {
     grid = List.generate(gridSize, (_) => List.filled(gridSize, ' '));
@@ -151,6 +253,7 @@ class Player {
         int? x = int.tryParse(parts[0]);
         int? y = int.tryParse(parts[1]);
         if (x != null && y != null && _isValidMove(x, y, opponent.grid)) {
+          lastMove = Point(x, y);
           _processMove(x, y, opponent);
           return;
         }
@@ -160,19 +263,16 @@ class Player {
   }
 
   bool _isValidMove(int x, int y, List<List<String>> grid) {
-    // Проверяем границы поля
     if (x < 0 || y < 0 || x >= gridSize || y >= gridSize) {
       print("Координаты вне допустимого диапазона. Попробуйте снова.");
       return false;
     }
-    // Проверяем, что клетка ещё не атакована
     if (grid[y][x] == '.' || grid[y][x] == 'X') {
       print("Вы уже атаковали эту клетку. Попробуйте другую.");
       return false;
     }
     return true;
   }
-
 
   void _processMove(int x, int y, Player opponent) {
     if (opponent.grid[y][x] == 'S') {
@@ -192,36 +292,29 @@ class Player {
 }
 
 class Bot extends Player {
-  Random random = Random();
-
   Bot(int gridSize) : super("Бот", gridSize);
 
-  @override
   void makeMove(Player opponent) {
+    Random random = Random();
     while (true) {
       int x = random.nextInt(gridSize);
       int y = random.nextInt(gridSize);
       if (_isValidMove(x, y, opponent.grid)) {
-        print("Бот атакует: $x $y");
+        lastMove = Point(x, y);
         _processMove(x, y, opponent);
         return;
       }
     }
   }
-
-  @override
-  void displayGrids() {
-    // Бот не показывает своё поле
-  }
 }
 
 class Ship {
   final int size;
-  List<Point> positions = [];
+  final List<Point> positions = [];
 
   Ship(this.size);
 
   bool isSunk(List<List<String>> grid) {
-    return positions.every((point) => grid[point.y.toInt()][point.x.toInt()] == 'X');
+    return positions.every((pos) => grid[pos.y.toInt()][pos.x.toInt()] == 'X');
   }
 }
